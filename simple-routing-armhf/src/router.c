@@ -15,7 +15,7 @@
 #endif
 
 #ifndef XDP_VERBOSE
-#define XDP_VERBOSE 0
+#define XDP_VERBOSE 1
 #endif
 
 #if TC_VERBOSE || XDP_VERBOSE
