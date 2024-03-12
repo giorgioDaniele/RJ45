@@ -2,74 +2,41 @@
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
 
-/**
- * Opzioni di compilazione
- */
-
-#ifndef TC_VERBOSE_MODE
-#define TC_VERBOSE_MODE 0
-#endif
-
-#ifndef XDP_VERBOSE_MODE
-#define XDP_VERBOSE_MODE 1
-#endif
-
 #ifndef TIME_MODE
 #define TIME_MODE 0
 #endif
 
-#ifndef STATS_MODE 
+#ifndef STATS_MODE
 #define STATS_MODE 0
 #endif 
 
-/**
- * Costanti varie
- */
+#ifndef TC_VERBOSE
+#define TC_VERBOSE 0
+#endif
+
+#ifndef XDP_VERBOSE
+#define XDP_VERBOSE 0
+#endif
+
+#if TC_VERBOSE || XDP_VERBOSE
+#define DBG(fmt, ...)                           \
+({						\
+	char ____fmt[] = "rj45: " fmt;                \
+	bpf_trace_printk(____fmt, sizeof(____fmt),    \
+			 ##__VA_ARGS__);	      \
+})
+#else
+#endif
 
 #define ETH_ALEN 	6
-#define ETH_P_IP	0X0800
-
-#define IPPROTO_TCP 	6
-#define IPPROTO_UDP	17
-
-
-/**
- * Traffic Control Actions
- */
-
-#define TC_ACT_UNSPEC  		(-1)
-#define TC_ACT_OK		0
-#define TC_ACT_RECLASSIFY 	1
-#define TC_ACT_SHOT		2
-
-/**
- * Messaggi di debug
- */
-
-const char eth_rejected [] = 
-	"Ethernet packet has been rejected - 0x%x--0x%x (HEX)\n";
-const char ip4_rejected [] =
-	"IPv4 packet has been rejected - 0x%x--0x%x (HEX)\n";
-const char tcp_rejected [] =
-	"TCP packet has been rejected - 0x%x--0x%x (HEX)\n";
-const char udp_rejected [] =
-	"UDP packet has been rejected - 0x%x--0x%x (HEX)\n";
-
-const char pkt_redirected [] =
-	"Packet has been redirected - 0x%x--0x%x (HEX)\n";
-const char pkt_passed [] =
-	"Packet has been passed - 0x%x--0x%x (HEX)\n";
-
-/**
- * Definizione della chiavi e dei valori
- * della mappe utilizzate
- */
+#define TC_ACT_OK 	0
+#define TC_ACT_SHOT	1
 
 struct _route 
 {
-	__u8 src_mac[ETH_ALEN];
-	__u8 dst_mac[ETH_ALEN];
-	__u8 interface;
+	__u8 smac[ETH_ALEN];
+	__u8 dmac[ETH_ALEN];
+	__u8 iface;
 #if TIME_MODE
 	__u64 time;
 #endif
@@ -77,427 +44,229 @@ struct _route
 
 struct _session 
 {
-	__u32 src_ip;
-	__u32 dst_ip;
-	__u16 src_pt;
-	__u16 dst_pt;
+	__u32 srcip;
+	__u32 dstip;
+	__u16 sport;
+	__u16 dport;
 	__u8  proto;
 };
 
 struct 
 {
-	/**
-	 * Definizione della mappa utilizzata
-	 * come tabellina di instradamento
-	 */
-
 	__uint(type, 	BPF_MAP_TYPE_HASH);
 	__uint(max_entries, 1024);
 	__type(key, 	struct _session);
 	__type(value, 	struct _route);
 	__uint(pinning, LIBBPF_PIN_BY_NAME);
-	
 
 } routing_table SEC(".maps");
 
-/** 
- * Funzioni ausiliare
- */
-
-static __always_inline __u16 ip_checksum(__u16* ip4, int size)
-{	
-	__u64 sum = 0;
-	
-	while (size > 1)
-	{
-		sum += *ip4;
-		ip4++;
-		size -= 2;
-	}
-
-	if (size == 1)
-		sum += *(__u8*) ip4;
-
-	sum = (sum & 0xFFFF) + (sum >> 16);
-
-	return ~sum; 
-}
+#define IPPROTO_TCP  6
+#define IPPROTO_UDP 17
 
 SEC("tc")
 int tc_program(struct __sk_buff* ctx) 
 {
+	void* data     = (void*) (__u64) ctx->data;
+	void* data_end = (void*) (__u64) ctx->data_end;
 
-	void *data  	= (void*) (__u64) ctx->data;
-	void *data_end 	= (void*) (__u64) ctx->data_end;
-
-	struct ethhdr	*eth;
-	struct iphdr	*ip4;
-	struct tcphdr	*tcp;
-	struct udphdr	*udp;
+	struct ethhdr	*eth = NULL;
+	struct iphdr	*ip4 = NULL;
+	struct tcphdr	*tcp = NULL;
+	struct udphdr	*udp = NULL;
 
 	struct _session	session = {};
-	struct _route	route   = {};
+	struct _route	route	= {};
 
-	
-	/**
-	 * Processamento livello Data Link
-	 * 
-	 * Se il pacchetto non ha una intestazione
-	 * Ethernet compatibile con la dimensione
-	 * attesa, allora il pacchetto è scartato.
-	 * Se il pacchetto non trasporta protocollo
-	 * IPv4, allora il pacchetto è scartato
-	 */
-	
-	eth = (struct ethhdr*) data;
-	if (
-		data + 
-		sizeof(struct ethhdr) > data_end)
-	{
-#if TC_VERBOSE_MODE
-		bpf_trace_printk(
-				eth_rejected, sizeof(eth_rejected),
-				data, data_end);
-#else
-#endif
-			goto tc_pass;
-	}
-	if (eth->h_proto != __bpf_htons(ETH_P_IP))
-	{
-		goto tc_pass;
-	}
+	/* Livello Ethernet */
 
-	/**
-	 * Memorizzazione degli indirizzi sorgente e
-	 * destinazione MAC. In più, salvataggio del
-	 * numero di interfaccia di uscita
-	*/
+	if (data + sizeof(struct ethhdr) > data_end)
+		goto process_drop;
+	eth  = (struct ethhdr*) data;
 
-	__builtin_memcpy(route.src_mac, eth->h_source,	 ETH_ALEN);
-	__builtin_memcpy(route.dst_mac, eth->h_dest,	 ETH_ALEN);
-	route.interface = ctx->ifindex;
+	__builtin_memcpy(route.smac, eth->h_source,	 ETH_ALEN);
+	__builtin_memcpy(route.dmac, eth->h_dest,	 ETH_ALEN);
+	route.iface = ctx->ifindex;
 
-	/**
-	 * Processamento livello Rete
-	 *
-	 * Se il pacchetto non ha una intestazione
-	 * IPv4 conforme alla dimensione attesa,
-	 * allora è scartato
-	 * Se il pacchetto contiene delle opzioni,
-	 * allora è scartato
-	 */
-	
-	ip4 = (struct iphdr*) (data + sizeof(struct ethhdr));
-	if (
-		data + 
-		sizeof(struct ethhdr) + 
-		sizeof(struct iphdr)  > data_end)
-	{
-#if TC_VERBOSE_MODE
-		bpf_trace_printk(
-				ip4_rejected, sizeof(ip4_rejected),
-				data, data_end);
-#else
-#endif
-			goto tc_pass;
+	data = data + sizeof(struct ethhdr);
+
+	/* Livello IPv4 */
+
+	if (data + sizeof(struct iphdr) > data_end)
+		goto process_drop;
+	ip4  = (struct iphdr*) data;
+
+	session.srcip = ip4->saddr;
+	session.dstip = ip4->daddr;
+	session.proto = ip4->protocol;
+
+	data = data + sizeof(struct iphdr);
+
+	/** Livello TCP/UDP */
+
+	if (ip4->protocol == IPPROTO_TCP) {
+		if (data + sizeof(struct tcphdr) > data_end)
+			goto process_drop;
+		tcp = (struct tcphdr*) data;
+		goto process_tcp;
+	} else if (ip4->protocol == IPPROTO_UDP) {
+		if (data + sizeof(struct udphdr) > data_end)
+			goto process_drop;
+		udp = (struct udphdr*) data;
+		goto process_udp;
+	} else {
+		goto process_pass; /* Protocollo non supportato */
 	}
 
-	/**
-	 * Memorizzazione indirizzi IP sorgente
-	 * e destinazione. Salvataggio del
-	 * protocollo di livello trasporto.
-	 */
+process_tcp:
+	session.sport = tcp->source;
+	session.dport = tcp->dest;
+	goto update_routing_table;
+process_udp:
+	session.sport = udp->source;
+	session.dport = udp->dest;
+	goto update_routing_table;
 
-	session.src_ip = ip4->saddr;
-	session.dst_ip = ip4->daddr;
-	session.proto  = ip4->protocol;	
-	
-	/**
-	 * Processamento livello Trasporto
-	 *
-	 * Se il pacchetto non contiene UDP
-	 * oppure TCP, allora è scartato.
-	 * Se il pacchetto ha una intestazione
-	 * UDP oppure TCP non conforme con la
-	 * dimensione attesa, alloar è scartato.
-	 */
-
-	if (ip4->protocol == IPPROTO_TCP)
-	{	
-		tcp = (struct tcphdr*) (data + sizeof(struct ethhdr) + ip4->ihl * 4);
-		if (
-			data + 
-			sizeof(struct ethhdr) + 
-			(ip4->ihl * 4) + 
-			sizeof(struct tcphdr) > data_end)
-		{
-#if TC_VERBOSE_MODE
-			bpf_trace_printk(
-				tcp_rejected, sizeof(tcp_rejected),
-				data, data_end);
-#else
-#endif
-			goto tc_pass;
-		}
-
-		/**
-		 * Memorizzazione delle porte 
-		 * sorgente e destinazione 
-		 * utilizzate dalla sessione
-		 */
-
-		session.src_pt = tcp->source;
-		session.dst_pt = tcp->dest;
-	} 
-	else if (ip4->protocol == IPPROTO_UDP)
-	{
-		udp = (struct udphdr*) (data + sizeof(struct ethhdr) + ip4->ihl * 4);
-		if (
-			data + 
-			sizeof(struct ethhdr) + 
-			(ip4->ihl * 4) + 
-			sizeof(struct udphdr) > data_end)
-		{
-#if TC_VERBOSE_MODE
-			bpf_trace_printk(
-				udp_rejected, sizeof(udp_rejected),
-				data, data_end);
-#else
-#endif
-			goto tc_pass;
-		}
-
-		/**
-		 * Memorizzazione delle porte
-		 * sorgente e destinazione 
-		 * utilizzate dalla sessione
-		 */
-		
-		session.src_pt = udp->source;
-		session.dst_pt = udp->dest;
-	}
-    else 
-	{	/**
-		 * Protocollo livello trasporto
-		 *  non supportato
-		 */
-		goto tc_pass;
-	}
-
+update_routing_table:
 #if TIME_MODE
 	route.time = bpf_ktime_get_ns();
 #else
 #endif
-
 	bpf_map_update_elem(&routing_table, &session, &route, BPF_ANY);
-tc_pass:
-	return TC_ACT_OK;
+process_pass:
+  	return TC_ACT_OK;
+process_drop:
+	return TC_ACT_SHOT;
 }
 
 SEC("xdp")
 int xdp_program(struct xdp_md* ctx) 
-{
+{	
+	void* data     = (void*) (__u64) ctx->data;
+	void* data_end = (void*) (__u64) ctx->data_end;
 
-	/**
-	 * Puntatori al pacchetto ricevuto:
-	 * 	packet_s = start of packet;
-	 * 	packet_d = end of packet;
-	 */
+	__u64 sum  = 0;
+	__u32 sze  = 0;
+	__u16 *ptr = NULL;
 
-	void *data  	= (void*) (__u64) ctx->data;
-	void *data_end 	= (void*) (__u64) ctx->data_end;
-
-	struct ethhdr	*eth;
-	struct iphdr	*ip4;
-	struct tcphdr	*tcp;
-	struct udphdr	*udp;
+	struct ethhdr	*eth = NULL;
+	struct iphdr	*ip4 = NULL;
+	struct tcphdr	*tcp = NULL;
+	struct udphdr	*udp = NULL;
 
 	struct _session	session = {};
-	struct _route	*route;
-	
-	/**
-	 * Processamento livello Data Link
-	 * 
-	 * Se il pacchetto non ha una intestazione
-	 * Ethernet compatibile con la dimensione
-	 * attesa, allora il pacchetto è scartato.
-	 * Se il pacchetto non trasporta protocollo
-	 * IPv4, allora il pacchetto è scartato
-	 */
-	
-	eth = (struct ethhdr*) data;
-	if (
-		data + 
-		sizeof(struct ethhdr) > data_end)
-	{
-#if XDP_VERBOSE_MODE
-		bpf_trace_printk(
-				eth_rejected, sizeof(eth_rejected),
-				data, data_end);
-#else
-#endif
-		goto xdp_pass;
-	}
-	if (eth->h_proto != __bpf_htons(ETH_P_IP))
-	{
-		goto xdp_pass;
-	}
+	struct _route	*route  = NULL;
 
-	/**
-	 * Processamento livello Rete
-	 *
-	 * Se il pacchetto non ha una intestazione
-	 * IPv4 conforme alla dimensione attesa,
-	 * allora è scartato
-	 * Se il pacchetto contiene delle opzioni,
-	 * allora è scartato
-	 */
-	
-	ip4 = (struct iphdr*) (data + sizeof(struct ethhdr));
-	if (
-		data + 
-		sizeof(struct ethhdr) + 
-		sizeof(struct iphdr)  > data_end)
-	{
-#if XDP_VERBOSE_MODE
-		bpf_trace_printk(
-				ip4_rejected, sizeof(ip4_rejected),
-				data, data_end);
-#else
-#endif
-		goto xdp_pass;
+	/* Livello Ethernet */
+
+	if (data + sizeof(struct ethhdr) > data_end)
+		goto process_drop;
+	eth  = (struct ethhdr*) data;
+	data = data + sizeof(struct ethhdr);
+
+	/* Livello IPv4 */
+
+	if (data + sizeof(struct iphdr) > data_end)
+		goto process_drop;
+	ip4  = (struct iphdr*) data;
+
+	session.srcip = ip4->saddr;
+	session.dstip = ip4->daddr;
+	session.proto = ip4->protocol;
+
+	data = data + sizeof(struct iphdr);
+
+	/** Livello TCP/UDP */
+
+	if (ip4->protocol == IPPROTO_TCP) {
+		if (data + sizeof(struct tcphdr) > data_end)
+			goto process_drop;
+		tcp = (struct tcphdr*) data;
+		goto process_tcp;
+	} else if (ip4->protocol == IPPROTO_UDP) {
+		if (data + sizeof(struct udphdr) > data_end)
+			goto process_drop;
+		udp = (struct udphdr*) data;
+		goto process_udp;
+	} else {
+		goto process_pass;  /* Protocollo non supportato */
 	}
 
-	/**
-	 * Memorizzazione indirizzi IP sorgente
-	 * e destinazione. Salvataggio del
-	 * protocollo di livello trasporto.
-	 */
+	/* Accelerazione del traffico */
 
-	session.src_ip = ip4->saddr;
-	session.dst_ip = ip4->daddr;
-	session.proto  = ip4->protocol;	
-	
-	/**
-	 * Processamento livello Trasporto
-	 *
-	 * Se il pacchetto non contiene UDP
-	 * oppure TCP, allora è scartato.
-	 * Se il pacchetto ha una intestazione
-	 * UDP oppure TCP non conforme con la
-	 * dimensione attesa, alloar è scartato.
-	 */
+process_tcp:
+	session.sport = tcp->source;
+	session.dport = tcp->dest;
+	goto query_routing_table;
 
-	if (ip4->protocol == IPPROTO_TCP)
-	{	
-		tcp = (struct tcphdr*) (data + sizeof(struct ethhdr) + ip4->ihl * 4);
-		if (
-			data + 
-			sizeof(struct ethhdr) + 
-			(ip4->ihl * 4) + 
-			sizeof(struct tcphdr) > data_end)
-		{
-#if XDP_VERBOSE_MODE
-			bpf_trace_printk(
-				tcp_rejected, sizeof(tcp_rejected),
-				data, data_end);
-#else
-#endif
-			goto xdp_pass;
-		}
+process_udp:
+	session.sport = udp->source;
+	session.dport = udp->dest;
+	goto query_routing_table;
 
-		/**
-		 * Memorizzazione delle porte 
-		 * sorgente e destinazione 
-		 * utilizzate dalla sessione
-		 */
-
-		session.src_pt = tcp->source;
-		session.dst_pt = tcp->dest;
-	} 
-	else if (ip4->protocol == IPPROTO_UDP)
-	{
-		udp = (struct udphdr*) (data + sizeof(struct ethhdr) + ip4->ihl * 4);
-		if (
-			data + 
-			sizeof(struct ethhdr) + 
-			(ip4->ihl * 4) + 
-			sizeof(struct udphdr) > data_end)
-		{
-#if XDP_VERBOSE_MODE
-			bpf_trace_printk(
-				udp_rejected, sizeof(udp_rejected),
-				data, data_end);
-#else
-#endif
-			goto xdp_pass;
-		}
-
-		/**
-		 * Memorizzazione delle porte
-		 * sorgente e destinazione 
-		 * utilizzate dalla sessione
-		 */
-		
-		session.src_pt = udp->source;
-		session.dst_pt = udp->dest;
-	}
-    else 
-	{	/**
-		 * Protocollo livello trasporto
-		 *  non supportato
-		 */
-		goto xdp_pass;
-	}
-	
+query_routing_table:
 	route = bpf_map_lookup_elem(&routing_table, &session);
-#if STATS_MODE
-	// TODO
-#else
-#endif
-	if (route) 
-	{
-#if XDP_VERBOSE_MODE
-		bpf_trace_printk(
-				pkt_redirected, sizeof(pkt_redirected),
-				data, data_end);
-#else
-#endif
-		goto xdp_redirect;
-	}
-	else
-	{
-#if XDP_VERBOSE_MODE
-		bpf_trace_printk(
-				pkt_passed, sizeof(pkt_passed),
-				data, data_end);
-#else
-#endif
-		goto xdp_pass;
-	}
-xdp_redirect:
-	/**
-	 * Aggiustamento del livello Ethernet
-	 */
-	__builtin_memcpy(eth->h_source, route->src_mac,	 ETH_ALEN);
-	__builtin_memcpy(eth->h_dest, route->dst_mac,	 ETH_ALEN);
-	/**
-	 * Aggiustamento del livello IPv4
-	 */
-	ip4->ttl   -=1;
-	ip4->check = 0;
-	ip4->check = ip_checksum((__u16*)ip4, sizeof(struct iphdr));
-	return bpf_redirect(route->interface, 0);
-xdp_pass:
-  	return XDP_PASS;
+	if (route) {
 
+		/* Modifica degli indirizzi di livello logico */
+		__builtin_memcpy(eth->h_source, route->smac, ETH_ALEN);
+		__builtin_memcpy(eth->h_dest, route->dmac,	 ETH_ALEN);
+
+		/* Modifica del parametro TTL */
+		ip4->ttl   -=1;
+		ip4->check = 0;
+
+		/* Calcolo del nuovo checksum */
+		sum = 0;
+		sze = sizeof(struct iphdr);
+		ptr = (__u16*) ip4;
+		while (sze > 1) {
+			sum += *ptr;
+			ptr++;
+			sze -= 2;
+		}
+		if (sze == 1)
+			sum += *(__u8*) ptr;
+		sum = (sum & 0xFFFF) + (sum >> 16);
+		ip4->check = ~sum;
+
+#if XDP_VERBOSE
+		if(udp) {
+			DBG("UDP session found - packet 0x%X to 0x%X (XDP_REDIRECT)\n", 
+				__bpf_ntohs(udp->source), 
+				__bpf_ntohs(udp->dest));
+		} 
+		if(tcp) {
+			DBG("TCP session found - packet 0x%X to 0x%X (XDP_REDIRECT)\n", 
+				__bpf_ntohs(tcp->source), 
+				__bpf_ntohs(tcp->dest));
+		}
+#else
+#endif
+
+		/* Accelerazione del pacchetto */
+		return bpf_redirect(route->iface, 0);
+	} else {
+
+	}
+#if XDP_VERBOSE
+		if(udp) {
+			DBG("UDP session not found - packet 0x%X to 0x%X (XDP_PASS)\n", 
+				__bpf_ntohs(udp->source), 
+				__bpf_ntohs(udp->dest));
+		} 
+		if(tcp) {
+			DBG("TCP session not found - packet 0x%X to 0x%X (XDP_PASS)\n", 
+				__bpf_ntohs(tcp->source), 
+				__bpf_ntohs(tcp->dest));
+		}
+#else
+#endif
+process_pass:
+  	return XDP_PASS;
+process_drop:
+	return XDP_DROP;
 }
 
 
-/**
- * Licenza
- */
-
 char _license [] SEC("license") = "GPL";
-
-/* Fine */
