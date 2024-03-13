@@ -21,6 +21,7 @@ static const char list_cmd  [] = "list";
 static const char stop_cmd  [] = "stop";
 static const char exit_cmd  [] = "exit";
 static const char help_cmd  [] = "help";
+static const char stat_cmd  [] = "stats";
 static const char *interfaces [] = {
 	"eth0",
 	"eth1",
@@ -111,6 +112,17 @@ static void xdp_program(int fd,
 	return;
 }
 
+#if STATISTICS_MODE
+static void read_stats(int map)
+{
+
+	// TODO
+
+	return;
+}
+#else
+#endif
+
 int main (int argc, char **argv)
 {	
 	int  i;
@@ -190,40 +202,101 @@ int main (int argc, char **argv)
 		cmd[i] = '\0';
 
 		if (strlen(cmd) == 0) {
+
+			/**
+			 * Comando non riconosciuto
+			*/
+
 			printf("# comando non valido, digita \"help\"\n");
+
 		} else if (strcmp(cmd, start_cmd) == 0) {
+			
+			/**
+			 * Richiesta dell'utente di avviare
+			 * il router
+			*/
+
 			active = 1;
 			tc_program(bpf_program__fd(r->progs.tc_program), 
 					active, hooks, hopts);
 			xdp_program(bpf_program__fd(r->progs.xdp_program),
 			 		active);
+
 		} else if (strcmp(cmd, stop_cmd) == 0) {
+
+			/**
+			 * Richiesta dell'utente di fermare
+			 * il router
+			*/
+
 			active = 0;
 			tc_program(bpf_program__fd(r->progs.tc_program), 
 					active, hooks, hopts);
 			xdp_program(bpf_program__fd(r->progs.xdp_program),
 			 		active);
+
 		} else if (strcmp(cmd, list_cmd) == 0) {
+
+			/**
+			 * Richiesta dell'utente di stampare a 
+			 * video le interfacce di rete
+			*/
+
 			n = sizeof(interfaces) / sizeof(interfaces[0]);	
 			for (i=0; i<n; i++) {
 				printf("\tinterfaccia %s, indice %u\n", 
 						interfaces[i], 
 						if_nametoindex(interfaces[i]));
 			}
+
+		}  else if (strcmp(cmd, stat_cmd) == 0) {
+			
+			/**
+			 * Richiesta dell'utente di stampare
+			 * a video le statistiche.
+			*/
+
+			// TODO
+
 		} else if (strcmp(cmd, exit_cmd) == 0) {
+
+			/**
+			 * Richiesta dell'utente di terminare
+			 * il programma
+			*/
+
 			exiting = 0;
+
 		} else if (strcmp(cmd, help_cmd) == 0) {
+
+			/**
+			 * Richiesta dell'utente di stampare
+			 * i comandi disponibili
+			*/
+
 			printf("\n\t start - avvia il router");
 			printf("\n\t stop  - arresta il router");
 			printf("\n\t exit  - esci dal terminale");
 			printf("\n\t help  - stampa aiuto comandi");
 			printf("\n\t list  - stampa interfacce di rete");
 			printf("\n");
+
 		} else {
+
+			/**
+			 * Comando non riconosciuto
+			*/
+
 			printf("# comando non valido, digita \"help\"\n");
+
 		}
 	}
 #endif
+
+	/**
+	 * Terminazione del programma
+	*/
+
 end:
 
 	if(active) {
@@ -235,8 +308,10 @@ end:
 	}
 
 	/**
-	 * Rimozione della mappa
+	 * Rimozione della mappa dal
+	 * file system virtuale
 	*/
+
 	snprintf(rt_map_path, MAP_PATH, "%s/%s", 
 			pin_base_dir, routing_table_path);
 	bpf_map__unpin(r->maps.routing_table, rt_map_path);

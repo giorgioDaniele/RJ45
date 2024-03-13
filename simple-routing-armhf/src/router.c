@@ -51,6 +51,25 @@ struct
 
 } routing_table SEC(".maps");
 
+#if STATISTICS_MODE
+struct _statistics 
+{
+	__u64 packets;
+	__u64 bytes;
+};
+
+struct 
+{
+	__uint(type, 	BPF_MAP_TYPE_PERCPU_HASH);
+	__uint(max_entries, 1024);
+	__type(key, 	struct _session);
+	__type(value, 	struct _statistics);
+	__uint(pinning, LIBBPF_PIN_BY_NAME);
+
+} statistics_table SEC(".maps");
+#else
+#endif
+
 #define IPPROTO_TCP  6
 #define IPPROTO_UDP 17
 
@@ -105,10 +124,12 @@ int tc_program(struct __sk_buff* ctx)
 		udp = (struct udphdr*) data;
 		goto process_udp;
 	} else {
+
 		/**
 		 * Protocollo livello trasporto
 		 * non supportato
 		*/
+
 		goto process_pass;
 	}
 
@@ -153,6 +174,12 @@ int xdp_program(struct xdp_md* ctx)
 	struct _session	session = {};
 	struct _route	*route  = NULL;
 
+#if STATISTICS_MODE 
+	struct _statistics *statistics = NULL;
+	struct _statistics  new_statistics = {};
+#else
+#endif
+
 	/* Livello Ethernet */
 
 	if (data + sizeof(struct ethhdr) > data_end)
@@ -185,10 +212,12 @@ int xdp_program(struct xdp_md* ctx)
 		udp = (struct udphdr*) data;
 		goto process_udp;
 	} else {
+
 		/**
 		 * Protocollo livello trasporto
 		 * non supportato
 		*/
+
 		goto process_pass;
 	}
 
@@ -251,14 +280,54 @@ query_routing_table:
 		}
 #else
 #endif	
+
+#if STATISTICS_MODE
+		/**
+		 * Aggiornamento delle statistiche
+		*/
+		statistics = bpf_map_lookup_elem(&statistics_table, &session);
+		if (statistics) {
+
+			/**
+			 * Aggiornamento delle statistiche
+			 * finora raccolte
+			*/
+
+			statistics->packets += (__u64) 1;
+			statistics->bytes   += (__u64) (data_end - data);
+
+		} else {
+
+			/**
+			 * Aggiunta di un nuovo
+			 * elemento all'interno
+			 * della mappa
+			*/
+
+			new_statistics.packets = (__u64) 1;
+			new_statistics.bytes   = (__u64) (data_end - data);
+		
+			bpf_map_update_elem(
+				&statistics_table, &session, 
+				&new_statistics, BPF_NOEXIST);
+		}
+#else
+#endif
 		/**
 		 * Accelerazione del pacchetto
 		 * di rete
 		*/
 		return bpf_redirect(route->iface, 0);
-	} else {
-
 	}
+
+	/**
+	 * Il pacchetto non è stato
+	 * accelerato per mancanza
+	 * della sessione all'interno
+	 * della tabellina di instra
+	 * damento.
+	*/
+
 #if XDP_VERBOSE
 		if(udp) {
 			DBG("UDP session not found - packet 0x%X to 0x%X (XDP_PASS)\n", 
