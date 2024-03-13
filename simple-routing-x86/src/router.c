@@ -102,7 +102,7 @@ int tc_program(struct __sk_buff* ctx)
 	/* Livello IPv4 */
 
 	if (data + sizeof(struct iphdr) > data_end)
-		goto process_drop;
+		goto process_pass;
 	ip4  = (struct iphdr*) data;
 
 	session.srcip = ip4->saddr;
@@ -147,9 +147,26 @@ update_routing_table:
 	route.time = bpf_ktime_get_ns();
 #else
 #endif
+
 	bpf_map_update_elem(
 		&routing_table, &session, 
 		&route, BPF_ANY);
+
+#if TC_VERBOSE
+
+		if(udp) {
+			DBG("[TC] UDP session - from %u to %u\n", 
+				__bpf_ntohs(udp->source), 
+				__bpf_ntohs(udp->dest));
+		} 
+		if(tcp) {
+			DBG("[TC] TCP session - from %u to %u\n", 
+				__bpf_ntohs(tcp->source), 
+				__bpf_ntohs(tcp->dest));
+		}
+#else
+#endif
+
 process_pass:
   	return TC_ACT_OK;
 process_drop:
@@ -202,7 +219,7 @@ int xdp_program(struct xdp_md* ctx)
 	/** Livello TCP/UDP */
 
 	if (ip4->protocol == IPPROTO_TCP) {
-		if (data + sizeof(struct tcphdr) > data_end)
+		if (data + sizeof(struct tcphdr) > data_end) 
 			goto process_drop;
 		tcp = (struct tcphdr*) data;
 		goto process_tcp;
@@ -234,8 +251,40 @@ process_udp:
 	goto query_routing_table;
 
 query_routing_table:
+
 	route = bpf_map_lookup_elem(&routing_table, &session);
-	if (route) {
+
+	if (route == NULL) {
+
+#if XDP_VERBOSE
+		if(udp) {
+			DBG("[XDP] UDP session not found - from %u to %u (XDP_PASS)\n", 
+				__bpf_ntohs(udp->source), 
+				__bpf_ntohs(udp->dest));
+		} 
+		if(tcp) {
+			DBG("[XDP] TCP session not found - from %u to %u (XDP_PASS)\n", 
+				__bpf_ntohs(tcp->source), 
+				__bpf_ntohs(tcp->dest));
+		}
+#else
+#endif
+
+	} else {
+
+#if XDP_VERBOSE
+		if(udp) {
+			DBG("[XDP] UDP session found - from %u to %u (XDP_REDIRECT)\n", 
+				__bpf_ntohs(udp->source), 
+				__bpf_ntohs(udp->dest));
+		} 
+		if(tcp) {
+			DBG("[XDP] TCP session found - from %u to %u (XDP_REDIRECT)\n", 
+				__bpf_ntohs(tcp->source), 
+				__bpf_ntohs(tcp->dest));
+		}
+#else
+#endif	
 
 		/**
 		 * Modifica degli indirizzi 
@@ -270,20 +319,6 @@ query_routing_table:
 		sum = (sum & 0xFFFF) + (sum >> 16);
 		ip4->check = ~sum;
 
-#if XDP_VERBOSE
-		if(udp) {
-			DBG("UDP session found - packet 0x%X to 0x%X (XDP_REDIRECT)\n", 
-				__bpf_ntohs(udp->source), 
-				__bpf_ntohs(udp->dest));
-		} 
-		if(tcp) {
-			DBG("TCP session found - packet 0x%X to 0x%X (XDP_REDIRECT)\n", 
-				__bpf_ntohs(tcp->source), 
-				__bpf_ntohs(tcp->dest));
-		}
-#else
-#endif	
-
 #if STATISTICS_MODE
 
 		/**
@@ -317,35 +352,15 @@ query_routing_table:
 				&new_statistics, BPF_NOEXIST);
 		}
 #else
-#endif
+#endif	
 		/**
 		 * Accelerazione del pacchetto
 		 * di rete
 		*/
+
 		return bpf_redirect(route->iface, 0);
 	}
 
-	/**
-	 * Il pacchetto non è stato
-	 * accelerato per mancanza
-	 * della sessione all'interno
-	 * della tabellina di instra
-	 * damento.
-	*/
-
-#if XDP_VERBOSE
-		if(udp) {
-			DBG("UDP session not found - packet 0x%X to 0x%X (XDP_PASS)\n", 
-				__bpf_ntohs(udp->source), 
-				__bpf_ntohs(udp->dest));
-		} 
-		if(tcp) {
-			DBG("TCP session not found - packet 0x%X to 0x%X (XDP_PASS)\n", 
-				__bpf_ntohs(tcp->source), 
-				__bpf_ntohs(tcp->dest));
-		}
-#else
-#endif
 process_pass:
   	return XDP_PASS;
 process_drop:
