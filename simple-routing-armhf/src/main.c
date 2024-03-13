@@ -28,6 +28,10 @@ static const char *interfaces [] = {
 	"eth2",
 	"eth3",
 	/* Aggiungi qui nuove interfacce */
+	// "enp2s0",
+	"enp3s0",
+	"enp4s0",
+	"enp5s0",
 };
 
 static volatile unsigned char exiting = 1;
@@ -99,13 +103,15 @@ static void xdp_program(int fd,
 	
 	if (action) {
 		for (i=0; i<n; i++) {
-			bpf_xdp_attach(if_nametoindex(interfaces[i]), 
-				fd, XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+			bpf_xdp_attach(if_nametoindex(interfaces[i]), fd, 
+				XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE, 
+				NULL);
 		}
 	} else {
 		for (i=0; i<n; i++)	{
 			bpf_xdp_detach(if_nametoindex(interfaces[i]),
-					XDP_FLAGS_UPDATE_IF_NOEXIST, NULL);
+				XDP_FLAGS_UPDATE_IF_NOEXIST | XDP_FLAGS_SKB_MODE, 
+				NULL);
 		}
 	}
 
@@ -127,7 +133,7 @@ int main (int argc, char **argv)
 {	
 	int  i;
 	int  n;
-	int  active = 0;
+	int  active;
 
 	char cmd [CMD_SIZE];
 	
@@ -146,6 +152,7 @@ int main (int argc, char **argv)
 		sizeof(struct bpf_tc_opts));
 
 #if TESTING_MODE
+	signal(SIGINT, exit_program);
 #else
 	printf("############################################\n");
 	printf("           		R J - 4 5 		   			\n");
@@ -181,11 +188,15 @@ int main (int argc, char **argv)
 	*/
 
 	active = 1;
+
 	tc_program(bpf_program__fd(r->progs.tc_program), 
 				active, hooks, hopts);
 	xdp_program(bpf_program__fd(r->progs.xdp_program),
 			 	active);
 
+	printf("############################################\n");
+	printf("Avvio!\n");
+	printf("############################################\n");
 	while(exiting) {
 		sleep(20);
 	}
@@ -314,9 +325,14 @@ end:
 
 	snprintf(rt_map_path, MAP_PATH, "%s/%s", 
 			pin_base_dir, routing_table_path);
+
+#if TESTING_MODE
+	printf("Rimozione della mappa %s\n", rt_map_path);
+#else
+#endif	
 	bpf_map__unpin(r->maps.routing_table, rt_map_path);
 
-	printf("############################################\n");
+	printf("\n############################################\n");
 	return 0;
 }
 
