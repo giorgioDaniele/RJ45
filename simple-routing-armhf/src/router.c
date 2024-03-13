@@ -1,32 +1,22 @@
 #include "vmlinux.h"
+#include "options.h"
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
 
-#ifndef TIME_MODE
-#define TIME_MODE 0
-#endif
-
-#ifndef STATS_MODE
-#define STATS_MODE 0
-#endif 
-
-#ifndef TC_VERBOSE
-#define TC_VERBOSE 0
-#endif
-
-#ifndef XDP_VERBOSE
-#define XDP_VERBOSE 1
-#endif
-
 #if TC_VERBOSE || XDP_VERBOSE
-#define DBG(fmt, ...)                           \
+#define DBG(fmt, ...)   \
 ({						\
-	char ____fmt[] = "rj45: " fmt;                \
-	bpf_trace_printk(____fmt, sizeof(____fmt),    \
-			 ##__VA_ARGS__);	      \
+	char ____fmt[] = "rj45: " fmt;  \
+	bpf_trace_printk(____fmt, sizeof(____fmt), \
+			 ##__VA_ARGS__); \
 })
 #else
 #endif
+
+/**
+ * Definzione delle azioni
+ * nel programma TC
+*/
 
 #define ETH_ALEN 	6
 #define TC_ACT_OK 	0
@@ -37,7 +27,7 @@ struct _route
 	__u8 smac[ETH_ALEN];
 	__u8 dmac[ETH_ALEN];
 	__u8 iface;
-#if TIME_MODE
+#if TIME_BASED_MODE
 	__u64 time;
 #endif
 };
@@ -84,8 +74,8 @@ int tc_program(struct __sk_buff* ctx)
 		goto process_drop;
 	eth  = (struct ethhdr*) data;
 
-	__builtin_memcpy(route.smac, eth->h_source,	 ETH_ALEN);
-	__builtin_memcpy(route.dmac, eth->h_dest,	 ETH_ALEN);
+	__builtin_memcpy(route.smac, eth->h_source, ETH_ALEN);
+	__builtin_memcpy(route.dmac, eth->h_dest, ETH_ALEN);
 	route.iface = ctx->ifindex;
 
 	data = data + sizeof(struct ethhdr);
@@ -100,8 +90,8 @@ int tc_program(struct __sk_buff* ctx)
 	session.dstip = ip4->daddr;
 	session.proto = ip4->protocol;
 
-	data = data + sizeof(struct iphdr);
-
+	data = data + (ip4->ihl << 2);
+	
 	/** Livello TCP/UDP */
 
 	if (ip4->protocol == IPPROTO_TCP) {
@@ -115,7 +105,11 @@ int tc_program(struct __sk_buff* ctx)
 		udp = (struct udphdr*) data;
 		goto process_udp;
 	} else {
-		goto process_pass; /* Protocollo non supportato */
+		/**
+		 * Protocollo livello trasporto
+		 * non supportato
+		*/
+		goto process_pass;
 	}
 
 process_tcp:
@@ -128,11 +122,13 @@ process_udp:
 	goto update_routing_table;
 
 update_routing_table:
-#if TIME_MODE
+#if TIME_BASED_MODE
 	route.time = bpf_ktime_get_ns();
 #else
 #endif
-	bpf_map_update_elem(&routing_table, &session, &route, BPF_ANY);
+	bpf_map_update_elem(
+		&routing_table, &session, 
+		&route, BPF_ANY);
 process_pass:
   	return TC_ACT_OK;
 process_drop:
@@ -174,7 +170,7 @@ int xdp_program(struct xdp_md* ctx)
 	session.dstip = ip4->daddr;
 	session.proto = ip4->protocol;
 
-	data = data + sizeof(struct iphdr);
+	data = data + (ip4->ihl << 2);
 
 	/** Livello TCP/UDP */
 
@@ -189,7 +185,11 @@ int xdp_program(struct xdp_md* ctx)
 		udp = (struct udphdr*) data;
 		goto process_udp;
 	} else {
-		goto process_pass;  /* Protocollo non supportato */
+		/**
+		 * Protocollo livello trasporto
+		 * non supportato
+		*/
+		goto process_pass;
 	}
 
 	/* Accelerazione del traffico */
@@ -208,15 +208,23 @@ query_routing_table:
 	route = bpf_map_lookup_elem(&routing_table, &session);
 	if (route) {
 
-		/* Modifica degli indirizzi di livello logico */
+		/**
+		 * Modifica degli indirizzi 
+		 * di livello Ethernet
+		*/
 		__builtin_memcpy(eth->h_source, route->smac, ETH_ALEN);
-		__builtin_memcpy(eth->h_dest, route->dmac,	 ETH_ALEN);
+		__builtin_memcpy(eth->h_dest, route->dmac, ETH_ALEN);
 
-		/* Modifica del parametro TTL */
+		/**
+		 * Messa a punto dei paramentri
+		 * intestazione IPv4
+		*/
 		ip4->ttl   -=1;
 		ip4->check = 0;
 
-		/* Calcolo del nuovo checksum */
+		/**
+		 * Calcolo del checksum IPv4
+		*/
 		sum = 0;
 		sze = sizeof(struct iphdr);
 		ptr = (__u16*) ip4;
@@ -242,9 +250,11 @@ query_routing_table:
 				__bpf_ntohs(tcp->dest));
 		}
 #else
-#endif
-
-		/* Accelerazione del pacchetto */
+#endif	
+		/**
+		 * Accelerazione del pacchetto
+		 * di rete
+		*/
 		return bpf_redirect(route->iface, 0);
 	} else {
 
@@ -268,5 +278,8 @@ process_drop:
 	return XDP_DROP;
 }
 
+/**
+ * Licenza
+*/
 
 char _license [] SEC("license") = "GPL";

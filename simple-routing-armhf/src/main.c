@@ -7,14 +7,11 @@
 #include <linux/pkt_cls.h>
 #include <linux/if_link.h>
 
+#include "options.h"
 #include "skeleton.h"
 
 #define CMD_SIZE 100
 #define MAP_PATH 1500
-
-#ifndef TIME_MODE
-#define TIME_MODE 1
-#endif
 
 const char *pin_base_dir 	   = "/sys/fs/bpf";
 const char *routing_table_path = "routing_table";
@@ -129,24 +126,59 @@ int main (int argc, char **argv)
 	struct bpf_tc_hook *hooks = NULL;
 	struct bpf_tc_opts *hopts = NULL;
 	
-	printf("############################################\n");
-	printf("           		R J - 4 5 		   			\n");
-
 	n = sizeof(interfaces) / sizeof(interfaces[0]);
 
-	hooks = (struct bpf_tc_hook*) malloc(n * sizeof(struct bpf_tc_hook));
-	hopts = (struct bpf_tc_opts*) malloc(n * sizeof(struct bpf_tc_opts));
+	hooks = (struct bpf_tc_hook*) malloc(n * 
+		sizeof(struct bpf_tc_hook));
+	hopts = (struct bpf_tc_opts*) malloc(n * 
+		sizeof(struct bpf_tc_opts));
+
+#if TESTING_MODE
+#else
+	printf("############################################\n");
+	printf("           		R J - 4 5 		   			\n");
+#endif
 
 	if(hooks == NULL || hopts == NULL) {
+#if TESTING_MODE
+#else
 		printf("# errore durante l'avvio\n");
+#endif
 		goto end;
 	}
 
 	r = router__open_and_load();
 	if (r == NULL) {
+#if TESTING_MODE
+#else
 		printf("# errore verificatore eBPF\n");
+#endif
 		goto end;
 	}
+
+#if TESTING_MODE
+
+	/**
+	 * In modalità testing è possibile 
+	 * eseguire il router eBPF in sotto
+	 * fondo così da utilizzare altri
+	 * strumenti da linea di comando, 
+	 * come tools/bpftool per verificare
+	 * l'andamento del programma svilup
+	 * pato.
+	*/
+
+	active = 1;
+	tc_program(bpf_program__fd(r->progs.tc_program), 
+				active, hooks, hopts);
+	xdp_program(bpf_program__fd(r->progs.xdp_program),
+			 	active);
+
+	while(exiting) {
+		sleep(20);
+	}
+
+#else
 
 	while (exiting) {
 
@@ -191,6 +223,7 @@ int main (int argc, char **argv)
 			printf("# comando non valido, digita \"help\"\n");
 		}
 	}
+#endif
 end:
 
 	if(active) {
@@ -204,7 +237,8 @@ end:
 	/**
 	 * Rimozione della mappa
 	*/
-	snprintf(rt_map_path, MAP_PATH, "%s/%s", pin_base_dir, routing_table_path);
+	snprintf(rt_map_path, MAP_PATH, "%s/%s", 
+			pin_base_dir, routing_table_path);
 	bpf_map__unpin(r->maps.routing_table, rt_map_path);
 
 	printf("############################################\n");
