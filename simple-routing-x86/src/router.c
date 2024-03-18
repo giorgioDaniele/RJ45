@@ -75,10 +75,10 @@ int tc_program(struct __sk_buff* ctx)
 	void* data     = (void*) (__u64) ctx->data;
 	void* data_end = (void*) (__u64) ctx->data_end;
 
-	struct ethhdr	*eth = NULL;
-	struct iphdr	*ip4 = NULL;
-	struct tcphdr	*tcp = NULL;
-	struct udphdr	*udp = NULL;
+	struct ethhdr *eth = NULL;
+	struct iphdr  *ip4 = NULL;
+	struct tcphdr *tcp = NULL;
+	struct udphdr *udp = NULL;
 
 	struct _session	session = {};
 	struct _route	route	= {};
@@ -87,6 +87,9 @@ int tc_program(struct __sk_buff* ctx)
 		return TC_ACT_OK;
 
 	eth  = (struct ethhdr*) data;
+
+	if (__bpf_ntohs(eth->h_proto) != ETH_P_IP)
+		return TC_ACT_OK;
 
 	__builtin_memcpy(route.smac, eth->h_source, ETH_ALEN);
 	__builtin_memcpy(route.dmac, eth->h_dest, ETH_ALEN);
@@ -131,7 +134,7 @@ int tc_program(struct __sk_buff* ctx)
 		return TC_ACT_OK;
 	}
 
-#ifdef TC_VERBOSE 
+#if TC_VERBOSE 
 	if (udp) 
 	{
 		DBG("[TC] UDP session - from %u to %u\n", 
@@ -172,10 +175,10 @@ int xdp_program(struct xdp_md* ctx)
 	void* data     = (void*) (__u64) ctx->data;
 	void* data_end = (void*) (__u64) ctx->data_end;
 
-	struct ethhdr	*eth = NULL;
-	struct iphdr	*ip4 = NULL;
-	struct tcphdr	*tcp = NULL;
-	struct udphdr	*udp = NULL;
+	struct ethhdr *eth = NULL;
+	struct iphdr  *ip4 = NULL;
+	struct tcphdr *tcp = NULL;
+	struct udphdr *udp = NULL;
 
 	__u64 sum  = 0;
 	__u32 sze  = 0;
@@ -188,6 +191,9 @@ int xdp_program(struct xdp_md* ctx)
 		return XDP_PASS;
 
 	eth  = (struct ethhdr*) data;
+
+	if (__bpf_ntohs(eth->h_proto) != ETH_P_IP)
+		return XDP_PASS;
 
 	data = data + sizeof(struct ethhdr);
 
@@ -259,8 +265,7 @@ int xdp_program(struct xdp_md* ctx)
 	sum = (sum & 0xFFFF) + (sum >> 16);
 	ip4->check = ~sum;
 
-
-#ifdef XDP_VERBOSE
+#if XDP_VERBOSE
 	if (udp)
 	{
 		DBG("[XDP] UDP session found - from %u to %u (XDP_REDIRECT)\n",

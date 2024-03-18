@@ -131,7 +131,7 @@ int tc_program(struct __sk_buff* ctx)
 		return TC_ACT_OK;
 	}
 
-#ifdef TC_VERBOSE 
+#if TC_VERBOSE 
 	if (udp) 
 	{
 		DBG("[TC] UDP session - from %u to %u\n", 
@@ -260,7 +260,7 @@ int xdp_program(struct xdp_md* ctx)
 	ip4->check = ~sum;
 
 
-#ifdef XDP_VERBOSE
+#if XDP_VERBOSE
 	if (udp)
 	{
 		DBG("[XDP] UDP session found - from %u to %u (XDP_REDIRECT)\n",
