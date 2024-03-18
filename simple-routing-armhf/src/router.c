@@ -1,6 +1,7 @@
 #include "vmlinux.h"
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
+#include <linux/if_ether.h>
 
 #define TC_VERBOSE  0
 #define XDP_VERBOSE 0
@@ -87,6 +88,9 @@ int tc_program(struct __sk_buff* ctx)
 		return TC_ACT_OK;
 
 	eth  = (struct ethhdr*) data;
+
+	if (__bpf_ntohs(eth->h_proto) != ETH_P_IP)
+		return TC_ACT_OK;
 
 	__builtin_memcpy(route.smac, eth->h_source, ETH_ALEN);
 	__builtin_memcpy(route.dmac, eth->h_dest, ETH_ALEN);
@@ -188,6 +192,9 @@ int xdp_program(struct xdp_md* ctx)
 		return XDP_PASS;
 
 	eth  = (struct ethhdr*) data;
+
+	if (__bpf_ntohs(eth->h_proto) != ETH_P_IP)
+		return XDP_PASS;
 
 	data = data + sizeof(struct ethhdr);
 

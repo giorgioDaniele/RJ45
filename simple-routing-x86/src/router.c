@@ -1,6 +1,7 @@
 #include "vmlinux.h"
 #include "bpf_helpers.h"
 #include "bpf_endian.h"
+#include <linux/if_ether.h>
 
 #define TC_VERBOSE  0
 #define XDP_VERBOSE 0
@@ -75,10 +76,10 @@ int tc_program(struct __sk_buff* ctx)
 	void* data     = (void*) (__u64) ctx->data;
 	void* data_end = (void*) (__u64) ctx->data_end;
 
-	struct ethhdr *eth = NULL;
-	struct iphdr  *ip4 = NULL;
-	struct tcphdr *tcp = NULL;
-	struct udphdr *udp = NULL;
+	struct ethhdr	*eth = NULL;
+	struct iphdr	*ip4 = NULL;
+	struct tcphdr	*tcp = NULL;
+	struct udphdr	*udp = NULL;
 
 	struct _session	session = {};
 	struct _route	route	= {};
@@ -175,10 +176,10 @@ int xdp_program(struct xdp_md* ctx)
 	void* data     = (void*) (__u64) ctx->data;
 	void* data_end = (void*) (__u64) ctx->data_end;
 
-	struct ethhdr *eth = NULL;
-	struct iphdr  *ip4 = NULL;
-	struct tcphdr *tcp = NULL;
-	struct udphdr *udp = NULL;
+	struct ethhdr	*eth = NULL;
+	struct iphdr	*ip4 = NULL;
+	struct tcphdr	*tcp = NULL;
+	struct udphdr	*udp = NULL;
 
 	__u64 sum  = 0;
 	__u32 sze  = 0;
@@ -262,6 +263,7 @@ int xdp_program(struct xdp_md* ctx)
 	}
 	sum = (sum & 0xFFFF) + (sum >> 16);
 	ip4->check = ~sum;
+
 
 #if XDP_VERBOSE
 	if (udp)
