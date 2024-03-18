@@ -1,0 +1,18 @@
+La modalità di analisi comunemente utilizzata per valutare un apparato 
+di rete sono descritte nello RFC2544.
+
+- Misure da effettuare:
+  - consumo CPU per ogni core
+  - troughput espresso in Mbps e Mpps (condizione limite)
+
+- Condizioni di misurazione:
+  - nessuna accelerazione software
+  - accelerazione generica (ARM 32 bit e Intel 64 bit)
+  - accelerazione nativa (Intel 64 bit)
+
+- Risultati ottenuti (ARM 32 bit):
+  - Caratteristiche del dispositivo:
+    - RAM:
+    - CPU:
+    - Driver Ethernet:
+    - Capacità fisica:

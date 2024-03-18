@@ -216,7 +216,6 @@ int xdp_program(struct xdp_md* ctx)
 		tcp = (struct tcphdr*) data;
 		session.sport = tcp->source;
 		session.dport = tcp->dest;
-
 	} 
 	else if (ip4->protocol == IPPROTO_UDP) 
 	{
@@ -226,7 +225,6 @@ int xdp_program(struct xdp_md* ctx)
 		udp = (struct udphdr*) data;
 		session.sport = udp->source;
 		session.dport = udp->dest;
-
 	} 
 	else 
 	{
